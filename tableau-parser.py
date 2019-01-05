@@ -1,5 +1,6 @@
 import xml.etree.ElementTree as ET
 import re
+import argparse
 
 class Datasource(object):
     def __init__(self, name, caption):
@@ -7,6 +8,7 @@ class Datasource(object):
         self._caption = caption
         self._relations = []
         self._tables = []
+        self._worksheets = []
 
     @property
     def tables(self):
@@ -15,8 +17,14 @@ class Datasource(object):
     def relations(self):
         return self._relations
     @property
+    def name(self):
+        return self._name
+    @property
     def caption(self):
         return self._caption
+    @property
+    def worksheets(self):
+        return self._worksheets
 
     def addTable(self, table):
         if not isinstance(table, Table):
@@ -27,6 +35,11 @@ class Datasource(object):
         if not isinstance(relation, Relation):
             return TypeError
         self._relations.append(relation)
+
+    def addWorksheet(self, ws):
+        if not isinstance(ws, Worksheet):
+            return TypeError
+        self._worksheets.append(ws)
 
 class Table(object):
     def __init__(self, name, table, source):
@@ -47,7 +60,6 @@ class Table(object):
 class Relation(object):
     def __init__(self, lTable, rTable):
         self._type = NotImplementedError
-        # self._op = None
         self._lTable = lTable
         self._rTable = rTable
 
@@ -61,6 +73,13 @@ class Relation(object):
     def type(self):
         return self._type
 
+class Worksheet(object):
+    def __init__(self, name):
+        self._name = name
+
+    @property
+    def name(self):
+        return self._name
 
 class Join(Relation):
     def __init__(self, lTable, rTable):
@@ -127,35 +146,61 @@ def createRelation(relClass, root):
     relation.on(op, lCol, rCol)
     return relation
 
-tree = ET.parse("Diamond Monthly Report.twb")
-datasources = []
-for datasourceTag in tree.iterfind("datasources/datasource[@caption]"):
-    ds = Datasource(datasourceTag.get("name"), datasourceTag.get("caption"))
-    # add table
-    for tableTag in datasourceTag.iterfind(".//relation[@connection][@name]"):
-        table = Table(tableTag.get("name"), tableTag.get("table"), tableTag.text)
-        ds.addTable(table)
+def parseTWBFile(filePath):
+    tree = ET.parse(filePath)
+    datasources = []
+    for datasourceTag in tree.iterfind("datasources/datasource[@caption]"):
+        ds = Datasource(datasourceTag.get("name"), datasourceTag.get("caption"))
+        # add table
+        for tableTag in datasourceTag.iterfind(".//relation[@connection][@name]"):
+            table = Table(tableTag.get("name"), tableTag.get("table"), tableTag.text)
+            ds.addTable(table)
 
-    # add relationship
-    for relationTag in datasourceTag.iterfind(".//relation[@join][@type]"):
-        relClass = getRelationClass(relationTag.get("type"), relationTag.get("join"))
-        andTag = relationTag.find("./clause/expression[@op='AND']")
-        if andTag:
-            for opRootTag in andTag.iterfind("./expression"):
-                rel = createRelation(relClass, opRootTag)
+        # add relationship
+        for relationTag in datasourceTag.iterfind(".//relation[@join][@type]"):
+            relClass = getRelationClass(relationTag.get("type"), relationTag.get("join"))
+            andTag = relationTag.find("./clause/expression[@op='AND']")
+            if andTag:
+                for opRootTag in andTag.iterfind("./expression"):
+                    rel = createRelation(relClass, opRootTag)
+                    ds.addRalation(rel)
+            else:
+                rel = createRelation(relClass, relationTag.find("./clause/expression[@op]"))
                 ds.addRalation(rel)
-        else:
-            rel = createRelation(relClass, relationTag.find("./clause/expression[@op]"))
-            ds.addRalation(rel)
-    datasources.append(ds)
+        datasources.append(ds)
 
-for ds in datasources:
-    print("-------------------------------")
-    print("datasource: %s" % (ds.caption))
-    print("tables in this datasource:")
-    for t in ds.tables:
-        print("%s (%s)" % (t.name, t.source if t.source else t.table))
-    print("relation between tables:")
-    for r in ds.relations:
-        print(r)
+    # add worksheets
+    for worksheetTag in tree.iterfind("worksheets/worksheet[@name]"):
+        ws = Worksheet(worksheetTag.get("name"))
+        for dsTag in worksheetTag.iterfind(".//datasources/datasource[@name]"):
+            dsName = dsTag.get("name")
+            dsInstance = next((d for d in datasources if d.name == dsName), None)
+            if not dsInstance:
+                print("Found No Datasource named '%s'" % (dsName))
+                continue
+            else:
+                dsInstance.addWorksheet(ws)
 
+    return datasources
+
+def stdoutExporter(datasources):
+    for ds in datasources:
+        print("-------------------------------")
+        print("datasource: %s" % (ds.caption))
+        print("tables in this datasource:")
+        for t in ds.tables:
+            print("%s (%s)" % (t.name, t.source if t.source else t.table))
+        print("relation between tables:")
+        for r in ds.relations:
+            print(r)
+        print("related worksheets:")
+        for w in ds.worksheets:
+            print(w.name)
+
+argParser = argparse.ArgumentParser()
+argParser.add_argument("file", type = argparse.FileType('r'), help=".twb file")
+args = argParser.parse_args()
+if args.file:
+    print("parsing file: %s" % (args.file))
+    datasources = parseTWBFile(args.file)
+    stdoutExporter(datasources)
